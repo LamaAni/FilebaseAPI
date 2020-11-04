@@ -293,6 +293,7 @@ class FilebaseApi(FilebaseTemplateService, AsyncEventHandler):
         Args:
             sanic (Sanic): The sanic server.
         """
+
         async def invoke_websocket(*args, **kwargs):
             return await self._process_websocket_request(*args, **kwargs)
 

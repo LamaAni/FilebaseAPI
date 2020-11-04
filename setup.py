@@ -18,6 +18,11 @@ def get_version():
     return version
 
 
+def get_requirements():
+    with open(os.path.join(os.path.dirname(__file__), "requirements.txt")) as raw:
+        return [r.strip() for r in raw.read().split("\n") if len(r.strip()) > 0]
+
+
 setup(
     name="filebase_api",
     version=get_version(),
@@ -30,7 +35,7 @@ setup(
     packages=["filebase_api"],
     platforms="any",
     license="LICENSE",
-    install_requires=["match_pattern", "zthreading", "TicTocTimer", "zcommon", "jinja2", "sanic"],
+    install_requires=get_requirements(),
     python_requires=">=3.6",
     include_package_data=True,
 )

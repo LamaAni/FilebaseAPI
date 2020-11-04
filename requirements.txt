@@ -1,0 +1,7 @@
+match-pattern>=0.1.14
+zthreading>=0.1.17
+TicTocTimer>=0.1.4
+zcommon>=0.1.2
+Jinja2>=2.11.2
+sanic>=20.9.1
+sanic-oauth>=0.4.0
