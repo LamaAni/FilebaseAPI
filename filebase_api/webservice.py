@@ -14,6 +14,8 @@ from sanic.request import Request
 from sanic.websocket import WebSocketConnection, ConnectionClosed
 from sanic.exceptions import SanicException
 from sanic.exceptions import NotFound, ServerError
+from sanic_session.base import BaseSessionInterface
+from sanic_session import InMemorySessionInterface, Session
 from concurrent.futures import CancelledError
 
 from zcommon.shell import logger
@@ -36,6 +38,15 @@ from filebase_api.helpers import (
 from filebase_api.templates import FilebaseTemplateService
 
 
+def create_session_interface(sql_alchey_connection=None) -> BaseSessionInterface:
+    if sql_alchey_connection:
+        from filebase_api.session.sqlalchemy_session_interface import SqlAlchemySessionInterface
+
+        return SqlAlchemySessionInterface(sql_alchemy_connection=sql_alchey_connection)
+    else:
+        return InMemorySessionInterface()
+
+
 class FilebaseApi(FilebaseTemplateService, AsyncEventHandler):
     _active_pages: WeakSet = None
 
@@ -46,6 +57,8 @@ class FilebaseApi(FilebaseTemplateService, AsyncEventHandler):
         name: str = "",
         config: FilebaseApiConfig = None,
         load_config_from_directory: bool = True,
+        session_interface: BaseSessionInterface = None,
+        session_sqlalchemy_connection: str = None,
     ):
         """Creates a webapi service that servers files and websocket enabled files.
 
@@ -56,6 +69,10 @@ class FilebaseApi(FilebaseTemplateService, AsyncEventHandler):
             config (FilebaseApiConfig, optional): the service config. Defaults to None.
             load_config_from_directory (bool, optional): If true, load configurations from the
             service directory. Defaults to True.
+            session_interface (BaseSessionInterface, optional): If exists, usess this session interface.
+                Defaults to None
+            session_sqlalchemy_connection (str, optional): If exists and session_interface is None, creates
+                a new sqlalchemy session interface.
         """
         config = config if isinstance(config, FilebaseApiConfig) else FilebaseApiConfig(**(config or {}))
         AsyncEventHandler.__init__(self)
@@ -65,6 +82,14 @@ class FilebaseApi(FilebaseTemplateService, AsyncEventHandler):
         self._name = name
         self._active_pages = WeakSet()
         self._core_routes = FilebaseApiCoreRoutes()
+        self.load_config_from_directory = load_config_from_directory
+        self._session_interface = session_interface or create_session_interface(
+            sql_alchey_connection=session_sqlalchemy_connection,
+        )
+
+    @property
+    def session_interface(self) -> BaseSessionInterface:
+        return self._session_interface
 
     @property
     def config(self) -> FilebaseApiConfig:
@@ -294,6 +319,10 @@ class FilebaseApi(FilebaseTemplateService, AsyncEventHandler):
             sanic (Sanic): The sanic server.
         """
 
+        # Create the session middleware.
+        Session(app=sanic, interface=self.session_interface)
+
+        # Core routes
         async def invoke_websocket(*args, **kwargs):
             return await self._process_websocket_request(*args, **kwargs)
 

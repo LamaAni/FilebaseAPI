@@ -1,10 +1,13 @@
 import inspect
+import ujson
+import traceback
 from types import ModuleType
 from typing import List, Dict, Callable
 from enum import Enum
 
 from sanic.websocket import WebSocketConnection
 from sanic.request import Request
+from sanic_session.base import BaseSessionInterface, SessionDict, get_request_container
 
 from match_pattern import Pattern
 from zcommon.textops import create_unique_string_id
@@ -12,7 +15,12 @@ from zcommon.fs import load_config_files_from_path, relative_abspath
 from zcommon.modules import try_load_module_dynamic_with_timestamp
 from zcommon.textops import json_dump_with_types
 from zcommon.collections import SerializableDict
+from zcommon.shell import logger
 from zthreading.events import AsyncEventHandler
+from zthreading.decorators import collect_consecutive_calls_async
+from zthreading.tasks import wait_for_future
+
+# from zthreading.decorators import collect_delayed_calls_async
 
 FILEBASE_API_REMOTE_METHOD_MARKER_ATTRIB_NAME = "__filebase_api_remote_method"
 FILEBASE_API_REMOTE_METHOD_MARKER_CONFIG_ATTRIB_NAME = FILEBASE_API_REMOTE_METHOD_MARKER_ATTRIB_NAME + "_config"
@@ -28,14 +36,12 @@ class FilebaseTemplateServiceConfig(SerializableDict):
         self.update(kwargs)
 
     def load_from_path(self, src_path: str, pattern: Pattern = None):
-        """Loads a configuration from path into the current object.
-        """
+        """Loads a configuration from path into the current object."""
         self.update(load_config_files_from_path(src_path, pattern or "filebase.yaml|filebase.yml|filebase.json"))
 
     @classmethod
     def load_config_from_path(cls, src_path: str, pattern: Pattern = None, **kwargs):
-        """Loads the configuration from a path and creates a new config object.
-        """
+        """Loads the configuration from a path and creates a new config object."""
         val = cls(**kwargs)
         val.load_config_from_path(src_path, pattern)
         return val
@@ -54,44 +60,37 @@ class FilebaseTemplateServiceConfig(SerializableDict):
 
     @property
     def jinja_files(self) -> Pattern:
-        """The pattern to match files that require jinja templeting.
-        """
+        """The pattern to match files that require jinja templeting."""
         return self._parse_pattern(self.get("jinja_files", None))
 
     @jinja_files.setter
     def jinja_files(self, val: Pattern):
-        """Sets the pattern to match files that require jinja templeting.
-        """
+        """Sets the pattern to match files that require jinja templeting."""
         self["jinja_files"] = str(val)
 
     @property
     def macros_subpath(self) -> str:
-        """The suboath to the macros directory.
-        """
+        """The suboath to the macros directory."""
         return self.get("macros_subpath", "macros")
 
     @macros_subpath.setter
     def macros_subpath(self, val: str):
-        """The suboath to the macros directory.
-        """
+        """The suboath to the macros directory."""
         self["macros_subpath"] = val
 
     @property
     def macro_files_pattern(self) -> Pattern:
-        """The pattern to match files that are macro files.
-        """
+        """The pattern to match files that are macro files."""
         return self._parse_pattern(self.get("macro_files_pattern", None))
 
     @macro_files_pattern.setter
     def macro_files_pattern(self, val: Pattern):
-        """The pattern to match files that are macro files.
-        """
+        """The pattern to match files that are macro files."""
         self["macro_files_pattern"] = str(val)
 
     @property
     def src_subpath(self) -> str:
-        """The subpath to the template source directory.
-        """
+        """The subpath to the template source directory."""
         val = self.get("src_subpath", "public").strip()
         if len(val) > 0:
             return val
@@ -99,20 +98,17 @@ class FilebaseTemplateServiceConfig(SerializableDict):
 
     @src_subpath.setter
     def src_subpath(self, val: str):
-        """The subpath to the template source directory.
-        """
+        """The subpath to the template source directory."""
         self["src_subpath"] = val
 
     def save(self, config_path):
-        """Save this configuration to file.
-        """
+        """Save this configuration to file."""
         raise NotImplementedError()
 
 
 class FilebaseApiConfigMimeTypes(SerializableDict):
     def __init__(self, **kwargs):
-        """A dictionary of file types to mime types.
-        """
+        """A dictionary of file types to mime types."""
         super().__init__()
 
         init_types = {
@@ -153,6 +149,14 @@ class FilebaseApiConfigMimeTypes(SerializableDict):
 
 class FilebaseApiConfig(FilebaseTemplateServiceConfig):
     @property
+    def use_sessions(self) -> bool:
+        return self.get("use_sessions", True)
+
+    @use_sessions.setter
+    def use_sessions(self, val: bool):
+        self["use_sessions"] = val
+
+    @property
     def index_files(self) -> List[str]:
         """A list of index files to search for in the root directory"""
         return self.get("index_files", ["index.html", "index.htm"])
@@ -172,8 +176,7 @@ class FilebaseApiConfig(FilebaseTemplateServiceConfig):
 
     @property
     def jinja_files(self) -> Pattern:
-        """The pattern to match files that require jinja templeting.
-        """
+        """The pattern to match files that require jinja templeting."""
         return self._parse_pattern(self.get("jinja_files", "*.htm?|*.css"))
 
     @jinja_files.setter
@@ -182,8 +185,7 @@ class FilebaseApiConfig(FilebaseTemplateServiceConfig):
 
     @property
     def public_files(self) -> Pattern:
-        """The pattern to match files which are public.
-        """
+        """The pattern to match files which are public."""
         return self._parse_pattern(self.get("public_files", None))
 
     @public_files.setter
@@ -192,8 +194,7 @@ class FilebaseApiConfig(FilebaseTemplateServiceConfig):
 
     @property
     def private_files(self) -> Pattern:
-        """The pattern to match files which are private. Defaults to *.py.
-        """
+        """The pattern to match files which are private. Defaults to *.py."""
         return self._parse_pattern(self.get("private_files", "*,py"))
 
     @private_files.setter
@@ -203,8 +204,7 @@ class FilebaseApiConfig(FilebaseTemplateServiceConfig):
     # -----
     @property
     def private_path_marker(self) -> Pattern:
-        """The pattern to match files which are forced private by file name. Defaults to "*.private.*"
-        """
+        """The pattern to match files which are forced private by file name. Defaults to "*.private.*" """
         return self._parse_pattern(self.get("private_path_marker", "*.private.*"))
 
     @private_path_marker.setter
@@ -213,8 +213,7 @@ class FilebaseApiConfig(FilebaseTemplateServiceConfig):
 
     @property
     def public_path_marker(self) -> Pattern:
-        """The pattern to match files which are forced public by file name. Defaults to "*.public.*"
-        """
+        """The pattern to match files which are forced public by file name. Defaults to "*.public.*" """
         return self._parse_pattern(self.get("public_path_marker", "*.public.*"))
 
     @public_path_marker.setter
@@ -223,8 +222,7 @@ class FilebaseApiConfig(FilebaseTemplateServiceConfig):
 
     @property
     def module_file_marker(self) -> Pattern:
-        """The pattern to match websocket code files (module files)"
-        """
+        """The pattern to match websocket code files (module files)" """
         return self.get("module_file_marker", ".code.py")
 
     @module_file_marker.setter
@@ -232,18 +230,15 @@ class FilebaseApiConfig(FilebaseTemplateServiceConfig):
         self["module_file_marker"] = val
 
     def is_private(self, path: str) -> bool:
-        """Helper, check if a path is private.
-        """
+        """Helper, check if a path is private."""
         return self.private_files.test(path)
 
     def is_public(self, path: str) -> bool:
-        """Helper, check if a path is public.
-        """
+        """Helper, check if a path is public."""
         return self.public_files.test(path)
 
     def is_remote_access_allowed(self, path: str):
-        """Helper, check if remote access is allowed for this file.
-        """
+        """Helper, check if remote access is allowed for this file."""
         return self.public_path_marker.test(path) or self.is_public(path) and not self.is_private(path)
 
 
@@ -307,8 +302,7 @@ class FilebaseApiModuleInfo:
 
     @property
     def websocket_command_functions(self) -> Dict[str, Callable]:
-        """A collection of command functions to be exposed.
-        """
+        """A collection of command functions to be exposed."""
         if self._websocket_command_functions is None:
             self._websocket_command_functions = dict()
 
@@ -427,61 +421,62 @@ class FilebaseApiPage(AsyncEventHandler, dict):
         self._ws_command_functions = None
         self._module_info = module_info
 
+        self._configure_session_autosave()
+
     def __hash__(self):
         return self.page_id.__hash__()
 
     @property
     def page_id(self) -> str:
-        """The page id
-        """
+        """The page id"""
         return self._page_id
 
     @property
     def request(self) -> Request:
-        """The sanic request
-        """
+        """The sanic request"""
         return self._request
 
     @property
     def api(self) -> "FilebaseApi":  # noqa: F821
-        """The assciated filebase api.
-        """
+        """The assciated filebase api."""
         return self._api
 
     @property
+    def api_config(self) -> FilebaseApiConfig:
+        return self.api.config
+
+    @property
+    def session_interface(self) -> BaseSessionInterface:
+        return self.api.session_interface
+
+    @property
     def sub_path(self) -> str:
-        """The public route subpath (if any)
-        """
+        """The public route subpath (if any)"""
         return self._sub_path
 
     @property
     def websocket(self) -> FilebaseApiWebSocket:
-        """The associated websocket if this is a websocket call (if any)
-        """
+        """The associated websocket if this is a websocket call (if any)"""
         return self._ws
 
     @property
     def is_websocket_state(self) -> bool:
-        """True if this is a websocket call.
-        """
+        """True if this is a websocket call."""
         return self.websocket is not None
 
     @property
     def module_info(self) -> FilebaseApiModuleInfo:
-        """The code module information and value.
-        """
+        """The code module information and value."""
         return self._module_info
 
     @property
     def has_code_module(self) -> bool:
-        """If true has a code module.
-        """
+        """If true has a code module."""
         return self.module_info is not None
 
     @property
     def websocket_command_functions(self) -> Dict[str, Callable]:
-        """The associated list of all command functons in the code module.
-        """
+        """The associated list of all command functons in the code module."""
         return self.module_info.websocket_command_functions
 
     @property
@@ -490,6 +485,43 @@ class FilebaseApiPage(AsyncEventHandler, dict):
         functions that match the command functions
         """
         return self.module_info.websocket_javascript_command_functions
+
+    @property
+    def session(self) -> SessionDict:
+        return get_request_container(self.request)[self.session_interface.session_name]
+
+    @collect_consecutive_calls_async(on_error="_save_session_async_error")
+    def _save_session_async(self):
+        # ignore the response dict (i.e. the cookie)
+        req = get_request_container(self.request)
+        val = ujson.dumps(dict(req[self.session_interface.session_name]))
+        key = self.session_interface.prefix + req[self.session_interface.session_name].sid
+        wait_for_future(self.session_interface._set_value(key, val))
+
+    def _save_session_async_error(self, err):
+        logger.error(traceback.format_exception(err))
+        logger.error("Failed to save session.")
+
+    def _configure_session_autosave(self):
+        if (
+            hasattr(self.session, "_filebase_api_session_autosave_enabled")
+            and self.session._filebase_api_session_autosave_enabled is True
+        ):
+            return
+
+        self.session._filebase_api_session_autosave_enabled = True
+
+        call_session_dict_on_update = self.session.on_update
+
+        def call_on_update(*args, **kwargs):
+            if callable(call_session_dict_on_update):
+                call_session_dict_on_update(*args, **kwargs)
+            self._save_session_async()
+
+        self.session.on_update = call_on_update
+
+        # override the set attribute.
+        self.session.__setattr__ = set
 
     def register_event_if_exists(self, name: str, event_handler: AsyncEventHandler):
         """Registers a new event for the command handlers in the modules, if the handler exists.
@@ -521,8 +553,7 @@ class FilebaseApiPage(AsyncEventHandler, dict):
         self._bind_events[name] = skip_args_list
 
     def clear_bound_event(self, name: str):
-        """Removes a bound event. see bind_events
-        """
+        """Removes a bound event. see bind_events"""
         assert self.is_websocket_state, Exception("Cannot bind events in non websocket state. See is_websocket_state")
 
         if isinstance(name, Enum):

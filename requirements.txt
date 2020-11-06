@@ -5,3 +5,5 @@ zcommon>=0.1.2
 Jinja2>=2.11.2
 sanic>=20.9.1
 sanic-oauth>=0.4.0
+aiohttp>=3.3.2
+sanic-session>=0.7.3

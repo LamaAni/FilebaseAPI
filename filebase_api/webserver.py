@@ -3,9 +3,11 @@ import asyncio
 from sanic import Sanic
 from sanic.log import logger as sanic_logger
 from sanic.log import access_logger as sanic_access_logger
+from sanic_session.base import BaseSessionInterface
 
 from zcommon.shell import logger, style
 from zcommon.textops import random_string
+from zcommon.fs import relative_abspath
 from zthreading.events import EventHandler, get_active_loop
 from zthreading.tasks import Task
 from filebase_api.webservice import FilebaseApi
@@ -21,9 +23,10 @@ class WebServer(EventHandler):
         root_path: str,
         port: int = 8080,
         host: str = "localhost",
-        serve_path: str = "",
         server_id: str = None,
         on_event=None,
+        session_interface: BaseSessionInterface = None,
+        session_sqlalchemy_connection: str = None,
     ):
         super().__init__(on_event=on_event)
         self.server_id = server_id or f"{self.__class__.__name__}-{id(self)}"
@@ -36,7 +39,11 @@ class WebServer(EventHandler):
 
         self._sanic = Sanic(self.server_id, configure_logging=False)
 
-        self._filebaseapi_service = FilebaseApi(root_path)
+        self._filebaseapi_service = FilebaseApi(
+            root_path,
+            session_interface=session_interface,
+            session_sqlalchemy_connection=session_sqlalchemy_connection,
+        )
         self._filebaseapi_service.register(self._sanic)
 
     @property
@@ -129,7 +136,13 @@ class WebServer(EventHandler):
 
     @classmethod
     def start_global_web_server(
-        cls, root_path: str, host: str = "localhost", port: int = 8080, throw_error_if_running: bool = False
+        cls,
+        root_path: str = ".",
+        host: str = "localhost",
+        port: int = 8080,
+        throw_error_if_running: bool = False,
+        session_interface: BaseSessionInterface = None,
+        session_sqlalchemy_connection: str = None,
     ):
         """A helper method. Start a server with the above default params.
 
@@ -137,14 +150,14 @@ class WebServer(EventHandler):
             root_path (str): The path to server root folder
             host (str, optional): The host. Defaults to "localhost".
             port (int, optional): The port. Defaults to 8080.
-            throw_error_if_running (bool, optional): Throw an error if a global server 
+            throw_error_if_running (bool, optional): Throw an error if a global server
             is already running. Defaults to False.
 
         Raises:
             Exception: [description]
 
         Returns:
-            WebServer: the global webserver 
+            WebServer: the global webserver
         """
         if throw_error_if_running:
             assert not cls.is_global_webserver_running(), Exception("The global web server is already running.")
@@ -152,10 +165,19 @@ class WebServer(EventHandler):
         if cls.is_global_webserver_running():
             return cls._global_web_server
 
+        root_path = relative_abspath(root_path, call_stack_offset=2)
+
         server = (
             cls._global_web_server
             if hasattr(cls, "_global_web_server") and cls._global_web_server is not None
-            else cls(root_path=root_path, host=host, server_id="global", port=port)
+            else cls(
+                root_path=root_path,
+                host=host,
+                server_id="global",
+                port=port,
+                session_interface=session_interface,
+                session_sqlalchemy_connection=session_sqlalchemy_connection,
+            )
         )
         cls._global_web_server = server
         if not server.is_running:
