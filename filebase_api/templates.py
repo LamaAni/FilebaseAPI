@@ -5,8 +5,7 @@ from typing import Dict, Callable
 from jinja2.runtime import Macro
 
 from zcommon.fs import relative_abspath, is_relative_path
-from match_pattern import Pattern
-from filebase_api.helpers import FilebaseTemplateServiceConfig
+from filebase_api.config import FilebaseTemplateServiceConfig
 
 
 class FilebaseTemplateServiceException(Exception):
@@ -19,7 +18,6 @@ class FilebaseTemplateService(object):
     def __init__(
         self,
         root_path: str = None,
-        on_event=None,
         load_config: bool = True,
         load_environment: bool = True,
         load_jinja_macros: bool = True,
@@ -51,6 +49,10 @@ class FilebaseTemplateService(object):
             if isinstance(config, FilebaseTemplateServiceConfig)
             else FilebaseTemplateServiceConfig(**(config or {}))
         )
+
+        for preload_file in self._config.config_preload_files:
+            self._config.load_from_path(preload_file)
+
         if load_config:
             self._config.load_from_path(root_path)
 
@@ -62,34 +64,32 @@ class FilebaseTemplateService(object):
 
     @property
     def config(self) -> FilebaseTemplateServiceConfig:
-        """The template service config.
-        """
+        """The template service config."""
         return self._config
 
     @property
     def globals(self):
-        """The jinja env globals.
-        """
+        """The jinja env globals."""
         return self.jinja_environment.globals
 
     @property
     def template_loader(self) -> jinja2.DictLoader:
-        """The jinja env dict loader.
-        """
+        """The jinja env dict loader."""
         return self._template_loader
 
     @property
     def jinja_environment(self) -> jinja2.Environment:
-        """The jinja env.
-        """
+        """The jinja env."""
         return self._jinja_environment
 
-    def resolve_path(self, src: str) -> str:
-        """Resolves an a jinja template relative path to an absolute path.
-        """
-        if is_relative_path(src) and self.config.src_subpath is not None:
-            src = os.path.join(self.config.src_subpath, src)
-        return relative_abspath(src, root_path=self.root_path)
+    def resolve_path(self, src: str, root_path: str = None, src_subpath: str = None) -> str:
+        """Resolves an a jinja template relative path to an absolute path."""
+        src_subpath = src_subpath if src_subpath is not None else self.config.src_subpath
+        root_path = root_path if root_path is not None else self.root_path
+        if is_relative_path(src) and src_subpath is not None:
+            src = os.path.join(src_subpath, src)
+
+        return relative_abspath(src, root_path=root_path)
 
     def import_file(self, file_path, as_jinja_template: bool = None):
         """Import a file from within one jinja template into another.

@@ -32,7 +32,7 @@ setup(
     author="Zav Shotan",
     author_email="",
     url="https://github.com/LamaAni/FilebaseAPI",
-    packages=["filebase_api"],
+    packages=["filebase_api", "filebase_api/session", "filebase_api/web"],
     platforms="any",
     license="LICENSE",
     install_requires=get_requirements(),

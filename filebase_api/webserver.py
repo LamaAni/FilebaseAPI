@@ -1,4 +1,5 @@
 import asyncio
+from typing import Union
 
 from sanic import Sanic
 from sanic.log import logger as sanic_logger
@@ -8,9 +9,12 @@ from sanic_session.base import BaseSessionInterface
 from zcommon.shell import logger, style
 from zcommon.textops import random_string
 from zcommon.fs import relative_abspath
+
 from zthreading.events import EventHandler, get_active_loop
 from zthreading.tasks import Task
+
 from filebase_api.webservice import FilebaseApi
+from filebase_api.config import FilebaseApiConfig
 
 
 class WebServer(EventHandler):
@@ -26,7 +30,7 @@ class WebServer(EventHandler):
         server_id: str = None,
         on_event=None,
         session_interface: BaseSessionInterface = None,
-        session_sqlalchemy_connection: str = None,
+        config: Union[FilebaseApiConfig, dict] = None,
     ):
         super().__init__(on_event=on_event)
         self.server_id = server_id or f"{self.__class__.__name__}-{id(self)}"
@@ -42,9 +46,13 @@ class WebServer(EventHandler):
         self._filebaseapi_service = FilebaseApi(
             root_path,
             session_interface=session_interface,
-            session_sqlalchemy_connection=session_sqlalchemy_connection,
+            config=config,
         )
         self._filebaseapi_service.register(self._sanic)
+
+    @property
+    def filebase_api(self) -> FilebaseApi:
+        return self._filebaseapi_service
 
     @property
     def sanic(self) -> Sanic:
@@ -141,8 +149,7 @@ class WebServer(EventHandler):
         host: str = "localhost",
         port: int = 8080,
         throw_error_if_running: bool = False,
-        session_interface: BaseSessionInterface = None,
-        session_sqlalchemy_connection: str = None,
+        config: FilebaseApiConfig = None,
     ):
         """A helper method. Start a server with the above default params.
 
@@ -175,8 +182,7 @@ class WebServer(EventHandler):
                 host=host,
                 server_id="global",
                 port=port,
-                session_interface=session_interface,
-                session_sqlalchemy_connection=session_sqlalchemy_connection,
+                config=config,
             )
         )
         cls._global_web_server = server

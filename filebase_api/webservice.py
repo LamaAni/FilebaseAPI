@@ -8,26 +8,32 @@ import sanic.response as response
 
 from weakref import WeakSet
 from typing import Set
+from concurrent.futures import CancelledError
 
 from sanic import Sanic
 from sanic.request import Request
 from sanic.websocket import WebSocketConnection, ConnectionClosed
 from sanic.exceptions import SanicException
-from sanic.exceptions import NotFound, ServerError
+from sanic.exceptions import NotFound, ServerError, Forbidden
+
 from sanic_session.base import BaseSessionInterface
 from sanic_session import InMemorySessionInterface, Session
-from concurrent.futures import CancelledError
+from sanic_oauth.blueprint import oauth_blueprint
 
 from zcommon.shell import logger
 from zcommon.fs import strip_path_extention
 from zcommon.textops import json_dump_with_types
+from match_pattern import Pattern
 from zthreading.events import AsyncEventHandler
 
+from filebase_api.config import (
+    FilebaseApiConfig,
+    FILEBASE_API_CORE_PAGES_MARKER,
+    FILEBASE_API_CORE_PAGES_PATH,
+)
 from filebase_api.helpers import (
     FilebaseApiModuleInfo,
-    FilebaseApiConfig,
     FilebaseApiWebSocket,
-    FilebaseApiPage,
     FilebaseApiCoreRoutes,
     FILEBASE_API_CORE_ROUTES_MARKER,
     FILEBASE_API_WEBSOCKET_MARKER,
@@ -35,6 +41,7 @@ from filebase_api.helpers import (
     FILEBASE_API_PAGE_TYPE_MARKER,
 )
 
+from filebase_api.webservice_page import FilebaseApiPage
 from filebase_api.templates import FilebaseTemplateService
 
 
@@ -58,7 +65,6 @@ class FilebaseApi(FilebaseTemplateService, AsyncEventHandler):
         config: FilebaseApiConfig = None,
         load_config_from_directory: bool = True,
         session_interface: BaseSessionInterface = None,
-        session_sqlalchemy_connection: str = None,
     ):
         """Creates a webapi service that servers files and websocket enabled files.
 
@@ -71,20 +77,23 @@ class FilebaseApi(FilebaseTemplateService, AsyncEventHandler):
             service directory. Defaults to True.
             session_interface (BaseSessionInterface, optional): If exists, usess this session interface.
                 Defaults to None
-            session_sqlalchemy_connection (str, optional): If exists and session_interface is None, creates
-                a new sqlalchemy session interface.
         """
-        config = config if isinstance(config, FilebaseApiConfig) else FilebaseApiConfig(**(config or {}))
         AsyncEventHandler.__init__(self)
-        super().__init__(root_path, config=config)
+        super().__init__(
+            root_path=root_path,
+            load_config=load_config_from_directory,
+        )
+
+        self._config = FilebaseApiConfig(**self._config)
+        self.config.update(config or {})
 
         self._uri = uri.strip().strip("/")
         self._name = name
         self._active_pages = WeakSet()
         self._core_routes = FilebaseApiCoreRoutes()
-        self.load_config_from_directory = load_config_from_directory
+
         self._session_interface = session_interface or create_session_interface(
-            sql_alchey_connection=session_sqlalchemy_connection,
+            sql_alchey_connection=self.config.session_sqlalchemy_connection,
         )
 
     @property
@@ -105,6 +114,17 @@ class FilebaseApi(FilebaseTemplateService, AsyncEventHandler):
     def active_pages(self) -> Set[FilebaseApiWebSocket]:
         """The currently active pages in memory (weak ref set)"""
         return self._active_pages
+
+    def resolve_path(self, sub_path: str) -> str:
+        """Resolves an a jinja template relative path to an absolute path."""
+        is_internal_page = sub_path.startswith(FILEBASE_API_CORE_PAGES_MARKER)
+        if is_internal_page:
+            sub_path = sub_path[len(FILEBASE_API_CORE_PAGES_MARKER) + 1 :]
+        return super().resolve_path(
+            sub_path,
+            root_path=FILEBASE_API_CORE_PAGES_PATH if is_internal_page else None,
+            src_subpath="" if is_internal_page else None,
+        )
 
     @jinja2.contextfunction
     def _print_filebase_api_scripts(self, context):
@@ -146,8 +166,25 @@ class FilebaseApi(FilebaseTemplateService, AsyncEventHandler):
             return None
         return FilebaseApiPage(self, sub_path, self._load_module_info_from_subpath(sub_path), rqst)
 
+    def _allow_oauth_on_path(self, sub_path: str):
+        if any(sub_path.startswith(v) for v in [FILEBASE_API_CORE_PAGES_MARKER, FILEBASE_API_CORE_ROUTES_MARKER]):
+            return False
+        return True
+
     async def _process_filebase_request(self, rqst: Request, sub_path: str = None):
         page = self._get_page_from_request(rqst, sub_path)
+        if (
+            page is not None
+            and self.config.oauth_active
+            and self._allow_oauth_on_path(sub_path)
+            and Pattern.match(self.config.oauth_path_match, sub_path or "")
+            and not await page.oauth_load()
+        ):
+            if self.config.oauth_login_page is None:
+                raise Forbidden("OAuth required")
+            else:
+                return response.redirect(self.config.oauth_login_page)
+
         rsp = await self._process_filebase_page(page, sub_path)
         return rsp
 
@@ -178,6 +215,7 @@ class FilebaseApi(FilebaseTemplateService, AsyncEventHandler):
             return response.text(core_route_raw, content_type=mime_type)
 
         file_path = self.resolve_path(sub_path)
+
         mime_type = self.config.mime_types.match_mime_type(file_path)
 
         if (
@@ -318,6 +356,10 @@ class FilebaseApi(FilebaseTemplateService, AsyncEventHandler):
         Args:
             sanic (Sanic): The sanic server.
         """
+
+        if self.config.oauth_active:
+            # Apply the blueprint
+            sanic.blueprint(oauth_blueprint)
 
         # Create the session middleware.
         Session(app=sanic, interface=self.session_interface)

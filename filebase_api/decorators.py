@@ -2,11 +2,11 @@ from typing import Callable
 from functools import wraps
 from zcommon.shell import logger
 from filebase_api.helpers import (
-    FilebaseApiPage,
     FILEBASE_API_REMOTE_METHOD_MARKER_ATTRIB_NAME,
     FILEBASE_API_REMOTE_METHOD_MARKER_CONFIG_ATTRIB_NAME,
     FilebaseApiRemoteMethodConfig,
 )
+from filebase_api.webservice_page import FilebaseApiPage
 
 
 def fapi_remote(fun):
@@ -31,8 +31,7 @@ def fapi_remote_config(config: FilebaseApiRemoteMethodConfig = None):
 
 
 def fapi_extra_logs(fun):
-    """Adds extra server side logs to remote websocket client method.
-    """
+    """Adds extra server side logs to remote websocket client method."""
 
     @wraps(fun)
     def wrapper(page: FilebaseApiPage, *args, **kwargs):
